@@ -2,6 +2,7 @@
   "scripts": {
     "build": "webpack",
     "watch": "webpack serve",
+    "test": "npm run build && SRC_PATH=\".\" EXEC_PATH=\"./test/Ports.elm\" npm run gen",
     "gen": "elm-node --js dist/lib.js --optimize src/Main.elm"
   },
   "dependencies": {
