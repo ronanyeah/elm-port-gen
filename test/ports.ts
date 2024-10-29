@@ -21,9 +21,21 @@ interface PortIn<T> {
   send: (_: T) => void;
 }
 
+type PortResult<E, T> =
+    | { err: E; data: null }
+    | { err: null; data: T };
+
 interface Data {
   name: string;
   amount: number;
 }
 
-export { ElmApp, Data };
+function portOk<E, T>(data: T): PortResult<E, T> {
+  return { data, err: null };
+}
+
+function portErr<E, T>(err: E): PortResult<E, T> {
+  return { data: null, err };
+}
+
+export { ElmApp, PortResult, portOk, portErr, Data };

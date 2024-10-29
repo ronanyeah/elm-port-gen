@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "fs";
 import { resolve, dirname } from "path";
 
-// Uncomment for typechecking
+// Uncomment for 'webpack serve' typechecking
 //require("./Main.elm");
 
 module.exports = (Elm: any) => {
@@ -17,7 +17,8 @@ module.exports = (Elm: any) => {
   const src = readFileSync(target, "utf8");
   const app = Elm.Main.init({ flags: { src } });
   app.ports.export.subscribe((txt: string) => {
-    const writeTo = resolve(dirname(target), "ports.d.ts");
+    const writeTo = resolve(dirname(target), "ports.ts");
     writeFileSync(writeTo, txt);
+    console.log("gen complete:", writeTo);
   });
 };
