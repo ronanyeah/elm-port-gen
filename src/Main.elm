@@ -199,7 +199,15 @@ typeName t =
                     (args
                         |> List.head
                         |> Maybe.map typeName
-                        |> Maybe.withDefault "opp"
+                        |> Maybe.withDefault "listErr"
+                    )
+                        ++ "[]"
+
+                "Array" ->
+                    (args
+                        |> List.head
+                        |> Maybe.map typeName
+                        |> Maybe.withDefault "arrayErr"
                     )
                         ++ "[]"
 
