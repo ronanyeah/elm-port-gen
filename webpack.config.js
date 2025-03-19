@@ -13,7 +13,7 @@ module.exports = () => {
   return {
     target: "node",
     mode: "development",
-    entry: "./src/index.ts",
+    entry: ["./src/index.ts", "./src/Main.elm"],
     stats: "errors-warnings",
     module: {
       rules: [

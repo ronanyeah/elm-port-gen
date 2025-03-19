@@ -1,39 +1,99 @@
-port module Main exposing (main)
+module Main exposing (main)
 
+import Dict exposing (Dict)
 import Elm.Parser
 import Elm.Syntax.Declaration exposing (Declaration(..))
 import Elm.Syntax.File
 import Elm.Syntax.Node as Node
 import Elm.Syntax.TypeAnnotation exposing (TypeAnnotation(..))
+import Maybe.Extra
 import Parser
-import Platform exposing (worker)
+import Platform
+import Ports
 import Result.Extra
+import Set
 
 
-main : Program Flags {} ()
+main : Program Ports.Flags Model Msg
 main =
-    worker
+    Platform.worker
         { init =
             \flags ->
-                ( {}
-                , Elm.Parser.parseToFile flags.src
-                    |> Result.mapError Parser.deadEndsToString
-                    |> Result.andThen handleFile
-                    |> Result.Extra.unpack errorCb successCb
-                )
-        , subscriptions = \_ -> Sub.none
-        , update = \_ model -> ( model, Cmd.none )
+                Elm.Parser.parseToFile flags.src
+                    |> Result.Extra.unpack
+                        (\err ->
+                            ( { portsFile = Nothing
+                              , externalImports = []
+                              }
+                            , Ports.errorCb
+                                ("port file failed:\n"
+                                    ++ Parser.deadEndsToString err
+                                )
+                            )
+                        )
+                        (\file ->
+                            let
+                                externals =
+                                    extractImports file
+
+                                modulesToImport =
+                                    externals
+                                        |> List.map .modulePath
+                                        |> Set.fromList
+                                        |> Set.toList
+                            in
+                            ( { portsFile = Just file
+                              , externalImports = externals
+                              }
+                            , Ports.readFiles modulesToImport
+                            )
+                        )
+        , subscriptions =
+            \_ ->
+                Ports.typesIn FilesCb
+        , update =
+            \msg model ->
+                case msg of
+                    FilesCb fileRes ->
+                        model.portsFile
+                            |> Maybe.Extra.unwrap
+                                ( model, Ports.errorCb "file not persisted" )
+                                (\file ->
+                                    matchImports file fileRes model.externalImports
+                                        |> Result.Extra.unpack
+                                            (\err ->
+                                                ( model
+                                                , Ports.errorCb err
+                                                )
+                                            )
+                                            (\markup ->
+                                                ( model
+                                                , Ports.successCb markup
+                                                )
+                                            )
+                                )
         }
 
 
-port successCb : String -> Cmd msg
+type Msg
+    = FilesCb (List Ports.ElmFile)
 
 
-port errorCb : String -> Cmd msg
+type alias Model =
+    { portsFile : Maybe Elm.Syntax.File.File
+    , externalImports : List ExternalImport
+    }
 
 
-type alias Flags =
-    { src : String
+type alias ExternalImport =
+    { modulePath : String
+    , recordName : String
+    }
+
+
+type alias RecordDef =
+    { name : String
+    , body : String
     }
 
 
@@ -41,14 +101,126 @@ type alias Flags =
 ---
 
 
-handleFile : Elm.Syntax.File.File -> Result String String
-handleFile file =
-    Result.map2 buildFile
-        (extractPorts file)
-        (extractDefinitions file)
+matchImports : Elm.Syntax.File.File -> List Ports.ElmFile -> List ExternalImport -> Result String String
+matchImports portsFile otherImports importsToMatch =
+    let
+        importedFilesRes =
+            otherImports
+                |> List.map
+                    (\data ->
+                        data.content
+                            |> Elm.Parser.parseToFile
+                            |> Result.mapError Parser.deadEndsToString
+                            |> Result.andThen extractRecordDefinitions
+                            |> Result.map
+                                (\defs ->
+                                    ( data.path
+                                    , defs
+                                    )
+                                )
+                    )
+                |> Result.Extra.combine
+                |> Result.map Dict.fromList
+
+        importDefs =
+            importedFilesRes
+                |> Result.andThen
+                    (findExternalImports importsToMatch)
+    in
+    Result.map3
+        (\externals ports origDefs ->
+            buildFile ports
+                (externals ++ origDefs)
+        )
+        importDefs
+        (extractPorts portsFile)
+        (extractDefinitions portsFile)
 
 
-extractDefinitions : Elm.Syntax.File.File -> Result String (List ( String, String ))
+findExternalImports : List ExternalImport -> Dict String (Dict String String) -> Result String (List RecordDef)
+findExternalImports externalImports files =
+    externalImports
+        |> List.map
+            (\data ->
+                files
+                    |> Dict.get data.modulePath
+                    |> Result.fromMaybe
+                        ("module not found: " ++ data.modulePath)
+                    |> Result.andThen
+                        (\defs ->
+                            Dict.get data.recordName defs
+                                |> Result.fromMaybe
+                                    ("record not found: "
+                                        ++ data.recordName
+                                    )
+                        )
+                    |> Result.map
+                        (\body ->
+                            { name = data.recordName
+                            , body = body
+                            }
+                        )
+            )
+        |> Result.Extra.combine
+
+
+extractRecordDefinitions : Elm.Syntax.File.File -> Result String (Dict String String)
+extractRecordDefinitions file =
+    file.declarations
+        |> List.filterMap
+            (\dec ->
+                case Node.value dec of
+                    AliasDeclaration p ->
+                        case Node.value p.typeAnnotation of
+                            Record xs ->
+                                let
+                                    name =
+                                        Node.value p.name
+                                in
+                                recordEntries xs
+                                    |> Result.map
+                                        (\val ->
+                                            ( name
+                                            , buildInterface name val
+                                            )
+                                        )
+                                    |> Just
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+            )
+        |> Result.Extra.combine
+        |> Result.map Dict.fromList
+
+
+extractImports : Elm.Syntax.File.File -> List ExternalImport
+extractImports file =
+    file.declarations
+        |> List.filterMap
+            (\dec ->
+                case Node.value dec of
+                    AliasDeclaration p ->
+                        case Node.value p.typeAnnotation of
+                            Typed a _ ->
+                                case Node.value a of
+                                    ( modulePath, definitionName ) ->
+                                        { modulePath = String.join "/" modulePath
+                                        , recordName = definitionName
+                                        }
+                                            |> Just
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+            )
+
+
+extractDefinitions : Elm.Syntax.File.File -> Result String (List RecordDef)
 extractDefinitions file =
     file.declarations
         |> List.filterMap
@@ -57,22 +229,20 @@ extractDefinitions file =
                     AliasDeclaration p ->
                         case Node.value p.typeAnnotation of
                             Record xs ->
-                                if Node.value p.name == "PortResult" then
+                                let
+                                    name =
+                                        Node.value p.name
+                                in
+                                if name == "PortResult" then
                                     Nothing
 
                                 else
                                     recordEntries xs
                                         |> Result.map
                                             (\val ->
-                                                ( Node.value p.name
-                                                , "interface "
-                                                    ++ Node.value p.name
-                                                    ++ " {\n  "
-                                                    ++ (val
-                                                            |> String.join "\n  "
-                                                       )
-                                                    ++ "\n}"
-                                                )
+                                                { name = name
+                                                , body = buildInterface name val
+                                                }
                                             )
                                         |> Just
 
@@ -129,7 +299,7 @@ extractPorts file =
         |> Result.Extra.combine
 
 
-buildFile : List String -> List ( String, String ) -> String
+buildFile : List String -> List RecordDef -> String
 buildFile portData defsData =
     let
         ports =
@@ -144,14 +314,14 @@ buildFile portData defsData =
                 ( "\n"
                     ++ String.join "\n\n"
                         (List.map
-                            Tuple.second
+                            .body
                             defsData
                         )
                     ++ "\n"
                 , ", "
                     ++ String.join ", "
                         (List.map
-                            Tuple.first
+                            .name
                             defsData
                         )
                 )
@@ -308,6 +478,17 @@ isOut t =
 
         _ ->
             False
+
+
+buildInterface : String -> List String -> String
+buildInterface name xs =
+    "interface "
+        ++ name
+        ++ " {\n  "
+        ++ (xs
+                |> String.join "\n  "
+           )
+        ++ "\n}"
 
 
 recordEntries : List (Node.Node ( Node.Node String, Node.Node TypeAnnotation )) -> Result String (List String)
