@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
-import { compileToString } from "node-elm-compiler";
 import { resolve, dirname } from "path";
 import { ElmApp, Flags } from "./ports";
+import { compileToString } from "./compiler";
 
 const cwd = process.cwd();
 
