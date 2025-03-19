@@ -31,9 +31,12 @@ import { resolve, dirname } from "path";
   console.log("Source file:", target);
   const src = readFileSync(target, "utf8");
   const app = Elm.Main.init({ flags: { src } });
-  app.ports.export.subscribe((txt: string) => {
+  app.ports.successCb.subscribe((txt: string) => {
     const writeTo = resolve(dirname(target), "ports.ts");
     writeFileSync(writeTo, txt);
     console.log("Written to:", writeTo);
+  });
+  app.ports.errorCb.subscribe((txt: string) => {
+    console.log("Error:", txt);
   });
 })();

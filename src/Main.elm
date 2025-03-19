@@ -2,111 +2,34 @@ port module Main exposing (main)
 
 import Elm.Parser
 import Elm.Syntax.Declaration exposing (Declaration(..))
-import Elm.Syntax.Node exposing (value)
+import Elm.Syntax.File
+import Elm.Syntax.Node as Node
 import Elm.Syntax.TypeAnnotation exposing (TypeAnnotation(..))
-import Json.Encode
+import Parser
 import Platform exposing (worker)
+import Result.Extra
 
 
-main : Program Flags Model Msg
+main : Program Flags {} ()
 main =
     worker
         { init =
             \flags ->
                 ( {}
                 , Elm.Parser.parseToFile flags.src
-                    |> Result.toMaybe
-                    |> Maybe.map
-                        (\file ->
-                            buildFile
-                                (file.declarations
-                                    |> List.filterMap
-                                        (\dec ->
-                                            case value dec of
-                                                PortDeclaration p ->
-                                                    case value p.typeAnnotation of
-                                                        FunctionTypeAnnotation a b ->
-                                                            let
-                                                                wrds =
-                                                                    if isOut b then
-                                                                        "PortOut<" ++ typeName a ++ ">"
-
-                                                                    else
-                                                                        "PortIn<" ++ getArgFromInPort a ++ ">"
-                                                            in
-                                                            value p.name
-                                                                ++ ": "
-                                                                ++ wrds
-                                                                ++ ";"
-                                                                |> Just
-
-                                                        _ ->
-                                                            Nothing
-
-                                                _ ->
-                                                    Nothing
-                                        )
-                                    |> String.join "\n  "
-                                )
-                                (file.declarations
-                                    |> List.filterMap
-                                        (\dec ->
-                                            case value dec of
-                                                AliasDeclaration p ->
-                                                    case value p.typeAnnotation of
-                                                        Record xs ->
-                                                            if value p.name == "PortResult" then
-                                                                Nothing
-
-                                                            else
-                                                                ( value p.name
-                                                                , "interface "
-                                                                    ++ value p.name
-                                                                    ++ " {\n  "
-                                                                    ++ (recordEntries xs
-                                                                            |> String.join "\n  "
-                                                                       )
-                                                                    ++ "\n}"
-                                                                )
-                                                                    |> Just
-
-                                                        _ ->
-                                                            Nothing
-
-                                                _ ->
-                                                    Nothing
-                                        )
-                                    |> (\xs ->
-                                            if List.isEmpty xs then
-                                                ( "", "" )
-
-                                            else
-                                                ( "\n"
-                                                    ++ String.join "\n\n"
-                                                        (List.map
-                                                            Tuple.second
-                                                            xs
-                                                        )
-                                                    ++ "\n"
-                                                , ", "
-                                                    ++ String.join ", "
-                                                        (List.map
-                                                            Tuple.first
-                                                            xs
-                                                        )
-                                                )
-                                       )
-                                )
-                        )
-                    |> Maybe.withDefault (Json.Encode.encode 0 Json.Encode.null)
-                    |> export
+                    |> Result.mapError Parser.deadEndsToString
+                    |> Result.andThen handleFile
+                    |> Result.Extra.unpack errorCb successCb
                 )
         , subscriptions = \_ -> Sub.none
         , update = \_ model -> ( model, Cmd.none )
         }
 
 
-port export : String -> Cmd msg
+port successCb : String -> Cmd msg
+
+
+port errorCb : String -> Cmd msg
 
 
 type alias Flags =
@@ -114,15 +37,125 @@ type alias Flags =
     }
 
 
-type alias Msg =
-    ()
+
+---
 
 
-type alias Model =
-    {}
+handleFile : Elm.Syntax.File.File -> Result String String
+handleFile file =
+    Result.map2 buildFile
+        (extractPorts file)
+        (extractDefinitions file)
 
 
-buildFile ports ( defs, exports ) =
+extractDefinitions : Elm.Syntax.File.File -> Result String (List ( String, String ))
+extractDefinitions file =
+    file.declarations
+        |> List.filterMap
+            (\dec ->
+                case Node.value dec of
+                    AliasDeclaration p ->
+                        case Node.value p.typeAnnotation of
+                            Record xs ->
+                                if Node.value p.name == "PortResult" then
+                                    Nothing
+
+                                else
+                                    recordEntries xs
+                                        |> Result.map
+                                            (\val ->
+                                                ( Node.value p.name
+                                                , "interface "
+                                                    ++ Node.value p.name
+                                                    ++ " {\n  "
+                                                    ++ (val
+                                                            |> String.join "\n  "
+                                                       )
+                                                    ++ "\n}"
+                                                )
+                                            )
+                                        |> Just
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+            )
+        |> Result.Extra.combine
+
+
+extractPorts : Elm.Syntax.File.File -> Result String (List String)
+extractPorts file =
+    file.declarations
+        |> List.filterMap
+            (\dec ->
+                case Node.value dec of
+                    PortDeclaration p ->
+                        case Node.value p.typeAnnotation of
+                            FunctionTypeAnnotation a b ->
+                                let
+                                    wrds =
+                                        if isOut b then
+                                            typeName a
+                                                |> Result.map
+                                                    (\val ->
+                                                        "PortOut<" ++ val ++ ">"
+                                                    )
+
+                                        else
+                                            getArgFromInPort a
+                                                |> Result.map
+                                                    (\val ->
+                                                        "PortIn<" ++ val ++ ">"
+                                                    )
+                                in
+                                wrds
+                                    |> Result.map
+                                        (\w ->
+                                            Node.value p.name
+                                                ++ ": "
+                                                ++ w
+                                                ++ ";"
+                                        )
+                                    |> Just
+
+                            _ ->
+                                Nothing
+
+                    _ ->
+                        Nothing
+            )
+        |> Result.Extra.combine
+
+
+buildFile : List String -> List ( String, String ) -> String
+buildFile portData defsData =
+    let
+        ports =
+            portData
+                |> String.join "\n  "
+
+        ( defs, exports ) =
+            if List.isEmpty defsData then
+                ( "", "" )
+
+            else
+                ( "\n"
+                    ++ String.join "\n\n"
+                        (List.map
+                            Tuple.second
+                            defsData
+                        )
+                    ++ "\n"
+                , ", "
+                    ++ String.join ", "
+                        (List.map
+                            Tuple.first
+                            defsData
+                        )
+                )
+    in
     """/* This file was generated by github.com/ronanyeah/elm-port-gen */
 
 interface ElmApp {
@@ -159,102 +192,117 @@ export { ElmApp, PortResult, portOk, portErr$EXPORTS };"""
         |> String.replace "$EXPORTS" exports
 
 
-typeName : Elm.Syntax.Node.Node TypeAnnotation -> String
+typeName : Node.Node TypeAnnotation -> Result String String
 typeName t =
-    -- todo: return Result
-    case value t of
+    case Node.value t of
         FunctionTypeAnnotation _ _ ->
             "TodoFunctionTypeAnnotation_"
+                |> Err
 
         GenericType val ->
             "TodoGenericType_"
                 ++ val
+                |> Err
 
         Typed typ args ->
-            case Tuple.second (value typ) of
+            case Tuple.second (Node.value typ) of
                 "String" ->
-                    "string"
+                    Ok "string"
 
                 "Bool" ->
-                    "boolean"
+                    Ok "boolean"
 
                 "Value" ->
-                    "any"
+                    Ok "any"
 
                 "Int" ->
-                    "number"
+                    Ok "number"
 
                 "Float" ->
-                    "number"
+                    Ok "number"
 
                 "Maybe" ->
-                    (args
+                    args
                         |> List.head
-                        |> Maybe.map typeName
-                        |> Maybe.withDefault "TodoMaybeType_"
-                    )
-                        ++ " | null"
+                        |> Result.fromMaybe "no maybe arg"
+                        |> Result.andThen typeName
+                        |> Result.map
+                            (\val ->
+                                val ++ " | null"
+                            )
 
                 "List" ->
-                    (args
+                    args
                         |> List.head
-                        |> Maybe.map typeName
-                        |> Maybe.withDefault "listErr"
-                    )
-                        ++ "[]"
+                        |> Result.fromMaybe "no list arg"
+                        |> Result.andThen typeName
+                        |> Result.map
+                            (\val ->
+                                val ++ "[]"
+                            )
 
                 "Array" ->
-                    (args
+                    args
                         |> List.head
-                        |> Maybe.map typeName
-                        |> Maybe.withDefault "arrayErr"
-                    )
-                        ++ "[]"
+                        |> Result.fromMaybe "no array arg"
+                        |> Result.andThen typeName
+                        |> Result.map
+                            (\val ->
+                                val ++ "[]"
+                            )
+
+                "PortResult" ->
+                    args
+                        |> List.map typeName
+                        |> Result.Extra.combine
+                        |> Result.map
+                            (\val ->
+                                "PortResult<"
+                                    ++ String.join ", " val
+                                    ++ ">"
+                            )
 
                 a ->
-                    if a == "PortResult" then
-                        let
-                            types =
-                                args
-                                    |> List.map typeName
-                                    |> String.join ", "
-                        in
-                        "PortResult<" ++ types ++ ">"
-
-                    else
-                        a
+                    Ok a
 
         Unit ->
-            "null"
+            Ok "null"
 
         Tupled xs ->
             xs
                 |> List.map typeName
-                |> String.join ", "
-                |> (\str ->
-                        "[" ++ str ++ "]"
-                   )
+                |> Result.Extra.combine
+                |> Result.map
+                    (\val ->
+                        "[" ++ String.join ", " val ++ "]"
+                    )
 
         Record xs ->
-            "{\n    " ++ (recordEntries xs |> String.join "\n    ") ++ "\n  }"
+            recordEntries xs
+                |> Result.map
+                    (\val ->
+                        "{\n    " ++ (val |> String.join "\n    ") ++ "\n  }"
+                    )
 
         GenericRecord _ _ ->
-            "TodoGenericRecord_"
+            Err "TodoGenericRecord_"
 
 
+getArgFromInPort : Node.Node TypeAnnotation -> Result String String
 getArgFromInPort t =
-    case value t of
+    case Node.value t of
         FunctionTypeAnnotation a _ ->
             typeName a
 
         _ ->
-            "TodoArgIn_"
+            Err "TodoArgIn_"
 
 
+isOut : Node.Node TypeAnnotation -> Bool
 isOut t =
-    case value t of
+    case Node.value t of
         Typed d _ ->
-            value d
+            Node.value d
                 |> Tuple.second
                 |> (==) "Cmd"
 
@@ -262,10 +310,16 @@ isOut t =
             False
 
 
+recordEntries : List (Node.Node ( Node.Node String, Node.Node TypeAnnotation )) -> Result String (List String)
 recordEntries xs =
     xs
-        |> List.map value
+        |> List.map Node.value
         |> List.map
             (\( n, t ) ->
-                value n ++ ": " ++ typeName t ++ ";"
+                typeName t
+                    |> Result.map
+                        (\val ->
+                            Node.value n ++ ": " ++ val ++ ";"
+                        )
             )
+        |> Result.Extra.combine
