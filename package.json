@@ -2,8 +2,9 @@
   "name": "elm-port-gen",
   "bin": "./dist/cli.js",
   "scripts": {
+    "check": "node scripts/build.mjs",
     "watch": "node --watch-path=./src scripts/build.mjs",
-    "compile": "esbuild --bundle src/index.ts --outfile=dist/cli.js --platform=node --banner:js='#!/usr/bin/env node'"
+    "compile": "npm run check && esbuild --bundle src/index.ts --outfile=dist/cli.js --platform=node --banner:js='#!/usr/bin/env node'"
   },
   "dependencies": {
     "@ronanyeah/node-elm-compiler-2": "^1.0.0",
