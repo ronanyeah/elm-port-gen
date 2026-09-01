@@ -344,9 +344,7 @@ interface PortIn<T> {
   send: (_: T) => void;
 }
 
-type PortResult<E, T> =
-    | { err: E; data: null }
-    | { err: null; data: T };
+type PortResult<E, T> = { err: E; data: null } | { err: null; data: T };
 $DEFS
 function portOk<E, T>(data: T): PortResult<E, T> {
   return { data, err: null };
