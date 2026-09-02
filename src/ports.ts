@@ -19,8 +19,6 @@ interface PortIn<T> {
   send: (value: T) => void;
 }
 
-export type PortResult<E, T> = { err: E; data: null } | { err: null; data: T };
-
 export interface Flags {
   src: string;
 }
@@ -28,12 +26,4 @@ export interface Flags {
 export interface ElmFile {
   path: string;
   content: string;
-}
-
-export function portOk<E, T>(data: T): PortResult<E, T> {
-  return { data, err: null };
-}
-
-export function portErr<E, T>(err: E): PortResult<E, T> {
-  return { data: null, err };
 }

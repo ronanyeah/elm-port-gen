@@ -21,17 +21,7 @@ interface PortIn<T> {
   send: (value: T) => void;
 }
 
-export type PortResult<E, T> = { err: E; data: null } | { err: null; data: T };
-
 export interface Data {
   name: string;
   amount: number;
-}
-
-export function portOk<E, T>(data: T): PortResult<E, T> {
-  return { data, err: null };
-}
-
-export function portErr<E, T>(err: E): PortResult<E, T> {
-  return { data: null, err };
 }
